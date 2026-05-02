@@ -11,7 +11,6 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif; background: #f1f5f9; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
-  input[type=number]::-webkit-inner-spin-button { opacity: 1; }
 </style>
 </head>
 <body>
@@ -19,7 +18,7 @@
 <script type="text/babel">
 const { useState, useEffect } = React;
 
-const EMPS_KEY = "yc_emps_v2";
+const EMPS_KEY = "yc_emps_v3";
 const HIST_KEY = "yc_hist_v2";
 const SETT_KEY = "yc_sett_v2";
 const PW_KEY   = "yc_pw_v1";
@@ -30,6 +29,22 @@ const kfmt = d => d ? new Date(d).toLocaleDateString("ko-KR",{year:"numeric",mon
 const diffD = (a,b) => Math.ceil((new Date(b)-new Date(a))/86400000);
 const uid = () => Math.random().toString(36).slice(2,9);
 
+// ── 연차 발생일수 자동 계산 (근로기준법 기준) ──
+function calcAnnualLeave(hireDateStr) {
+  if (!hireDateStr) return 0;
+  const hire = new Date(hireDateStr); hire.setHours(0,0,0,0);
+  const td = tod();
+  const diffDays = (td - hire) / 86400000;
+  const years = diffDays / 365;
+  if (years < 1) {
+    return Math.min(Math.floor(diffDays / 30), 11);
+  } else {
+    const fullYears = Math.floor(years);
+    return Math.min(15 + Math.floor((fullYears - 1) / 2), 25);
+  }
+}
+
+// ── 촉진 날짜 계산 ──
 function getInfo(hireDateStr) {
   if (!hireDateStr) return null;
   const hire = new Date(hireDateStr); hire.setHours(0,0,0,0);
@@ -44,6 +59,7 @@ function getInfo(hireDateStr) {
   return { ann, exp, fst, snd, period: ann.toISOString().split("T")[0] };
 }
 
+// ── 직원 상태 계산 ──
 function getStatus(emp, hist) {
   const info = getInfo(emp.hireDate);
   const td = tod();
@@ -58,24 +74,27 @@ function getStatus(emp, hist) {
   if (td >= fst)  return s1
     ? { tag:"1차 완료", color:"#2563eb", bg:"#eff6ff", info, s1, s2 }
     : { tag:"1차 촉진 필요", color:"#ea580c", bg:"#fff7ed", info, s1, s2, send:"1차", urgent:true };
-  const d = diffD(td, fst);
-  return { tag:`1차까지 D-${d}`, color:"#64748b", bg:"#f8fafc", info, s1, s2 };
+  return { tag:`1차까지 D-${diffD(td,fst)}`, color:"#64748b", bg:"#f8fafc", info, s1, s2 };
 }
 
-function makeDoc(emp, type, sett, extra="") {
+// ── 촉진 문서 생성 ──
+function makeDoc(emp, type, sett, extra, usedLeave) {
   const info = getInfo(emp.hireDate);
   const td = new Date();
+  const annual = calcAnnualLeave(emp.hireDate);
+  const remain = Math.max(annual - (Number(usedLeave)||0), 0);
   const rows = [
     ["수 신", `${emp.name}${emp.department?` (${emp.department})`:""} 귀하`],
     ["발 신", `${sett.company||"(회사명)"} 인사담당자`],
     ["통지 일자", kfmt(td)],
     ["입 사 일", kfmt(emp.hireDate)],
     ["연차 만료일", kfmt(info?.exp)],
-    ["잔여 연차", `${emp.remainLeave}일`],
+    ["발생 연차", `${annual}일`],
+    ["사용 연차", `${Number(usedLeave)||0}일`],
+    ["잔여 연차", `${remain}일`],
   ];
-  const lines = Array.from({length:Math.min(Number(emp.remainLeave)||5,10)},(_,i)=>
-    `&nbsp;&nbsp;${i+1}. ______년 &nbsp;______월 &nbsp;______일<br>`
-  ).join("");
+  const lines = Array.from({length:Math.min(remain||5,10)},(_,i)=>
+    `&nbsp;&nbsp;${i+1}. ______년 &nbsp;______월 &nbsp;______일<br>`).join("");
   return `<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;700&display=swap');
@@ -96,17 +115,9 @@ p{margin:10px 0}.box{border:2px solid #333;padding:20px;margin:20px 0;background
 <table>${rows.map(([k,v])=>`<tr><td class="th">${k}</td><td>${v}</td></tr>`).join("")}</table>
 <p>귀하의 미사용 연차유급휴가에 대하여 근로기준법 제61조에 따라 <strong>${type}</strong> 사용 촉진을 아래와 같이 통지합니다.</p>
 <div class="box">
-${type==="1차" ? `<strong>【 안 내 사 항 】</strong><br>
-이 통지를 받으신 날부터 <strong>10일 이내</strong>에 연차 사용 희망 시기를 인사담당자에게 서면으로 제출하여 주시기 바랍니다.<br>
-기간 내 미제출 시 회사가 사용 시기를 지정합니다 (근로기준법 제61조 제2항).<br><br>
-<strong>【 사용 희망 시기 작성란 】</strong><br><br>${lines}<br>
-<div class="row"><span>근로자 확인: _________________________ (서명)</span><span>날짜: _______년 &nbsp;___월 &nbsp;___일</span></div>`
-: `<strong>【 연차 사용 시기 지정 통보 】</strong><br>
-귀하께서 1차 촉진 통지 후 10일 이내에 연차 사용 시기를 지정하지 않으셨습니다.<br>
-이에 근로기준법 제61조 제2항에 따라 아래와 같이 사용 시기를 지정합니다.<br><br>
-<strong>【 지정 연차 사용일 】</strong><br>
-${extra ? extra.replace(/\n/g,"<br>") : "&nbsp;&nbsp;(별도 지정 예정)"}<br><br>
-<div class="row"><span>근로자 확인: _________________________ (서명)</span><span>날짜: _______년 &nbsp;___월 &nbsp;___일</span></div>`}
+${type==="1차"
+  ? `<strong>【 안 내 사 항 】</strong><br>이 통지를 받으신 날부터 <strong>10일 이내</strong>에 연차 사용 희망 시기를 인사담당자에게 서면으로 제출하여 주시기 바랍니다.<br>기간 내 미제출 시 회사가 사용 시기를 지정합니다 (근로기준법 제61조 제2항).<br><br><strong>【 사용 희망 시기 작성란 】</strong><br><br>${lines}<br><div class="row"><span>근로자 확인: _________________________ (서명)</span><span>날짜: _______년 &nbsp;___월 &nbsp;___일</span></div>`
+  : `<strong>【 연차 사용 시기 지정 통보 】</strong><br>귀하께서 1차 촉진 통지 후 10일 이내에 연차 사용 시기를 지정하지 않으셨습니다.<br>이에 근로기준법 제61조 제2항에 따라 아래와 같이 사용 시기를 지정합니다.<br><br><strong>【 지정 연차 사용일 】</strong><br>${extra?extra.replace(/\n/g,"<br>"):"&nbsp;&nbsp;(별도 지정 예정)"}<br><br><div class="row"><span>근로자 확인: _________________________ (서명)</span><span>날짜: _______년 &nbsp;___월 &nbsp;___일</span></div>`}
 </div>
 <p>연차유급휴가는 만료일(<strong>${kfmt(info?.exp)}</strong>) 이후 소멸됩니다.</p>
 <p>문의: ${sett.hrName||"인사담당자"} / ${sett.hrPhone||"인사팀"}</p>
@@ -130,7 +141,7 @@ function Modal({title,onClose,children,wide}) {
   return (
     <div onClick={e=>{if(e.target===e.currentTarget)onClose()}}
       style={{position:"fixed",inset:0,background:"rgba(0,0,0,.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:999,padding:16}}>
-      <div style={{background:"#fff",borderRadius:16,padding:28,width:"100%",maxWidth:wide?560:460,maxHeight:"92vh",overflowY:"auto",boxShadow:"0 24px 64px rgba(0,0,0,.2)"}}>
+      <div style={{background:"#fff",borderRadius:16,padding:28,width:"100%",maxWidth:wide?580:460,maxHeight:"92vh",overflowY:"auto",boxShadow:"0 24px 64px rgba(0,0,0,.2)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
           <h2 style={{margin:0,fontSize:17,fontWeight:700}}>{title}</h2>
           <button onClick={onClose} style={{background:"none",border:"none",fontSize:22,cursor:"pointer",color:"#9ca3af",lineHeight:1,padding:0}}>✕</button>
@@ -141,35 +152,48 @@ function Modal({title,onClose,children,wide}) {
   );
 }
 
+// ── 직원 추가/수정 모달 (4개 항목) ──
 function EmpFormModal({initial,onSave,onClose}) {
-  const [f,setF] = useState(initial ? {
-    name:initial.name||"", email:initial.email||"",
-    department:initial.department||"", hireDate:initial.hireDate||"",
-    remainLeave:initial.remainLeave!==undefined?String(initial.remainLeave):""
-  } : {name:"",email:"",department:"",hireDate:"",remainLeave:""});
+  const [f,setF] = useState(initial
+    ? {name:initial.name||"",email:initial.email||"",department:initial.department||"",hireDate:initial.hireDate||""}
+    : {name:"",email:"",department:"",hireDate:""});
   const set = k => e => setF(p=>({...p,[k]:e.target.value}));
-  const fields = [
-    {label:"이름 *",key:"name",type:"text",ph:"홍길동"},
-    {label:"이메일 *",key:"email",type:"email",ph:"hong@company.com"},
-    {label:"부서",key:"department",type:"text",ph:"인사팀"},
-    {label:"입사일 *",key:"hireDate",type:"date"},
-    {label:"잔여 연차 일수 *",key:"remainLeave",type:"number",ph:"15"},
-  ];
+  const preview = f.hireDate ? calcAnnualLeave(f.hireDate) : null;
+  const months = f.hireDate ? Math.floor((tod()-new Date(f.hireDate))/86400000/30) : 0;
+
   const save = () => {
-    if (!f.name.trim()||!f.email.trim()||!f.hireDate||f.remainLeave==="") {
-      alert("* 표시된 필수 항목을 모두 입력해 주세요."); return;
+    if (!f.name.trim()||!f.email.trim()||!f.hireDate) {
+      alert("이름, 이메일, 입사일은 필수 항목입니다."); return;
     }
     onSave(f);
   };
+
   return (
     <Modal title={initial?"직원 정보 수정":"직원 추가"} onClose={onClose}>
-      {fields.map(({label,key,type,ph})=>(
+      {[
+        {label:"이름 *",key:"name",type:"text",ph:"홍길동"},
+        {label:"이메일 *",key:"email",type:"email",ph:"hong@company.com"},
+        {label:"부서",key:"department",type:"text",ph:"인사팀"},
+        {label:"입사일 *",key:"hireDate",type:"date"},
+      ].map(({label,key,type,ph})=>(
         <div key={key} style={{marginBottom:14}}>
           <label style={lbl}>{label}</label>
-          <input type={type} value={f[key]} onChange={set(key)} placeholder={ph||""} min={type==="number"?0:undefined} style={inp}/>
+          <input type={type} value={f[key]} onChange={set(key)} placeholder={ph||""} style={inp}/>
         </div>
       ))}
-      <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:22}}>
+
+      {preview !== null && (
+        <div style={{background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:8,padding:"12px 14px",marginBottom:14}}>
+          <p style={{margin:"0 0 4px",fontSize:13,color:"#1e40af",fontWeight:700}}>
+            📊 발생 연차 자동 계산: {preview}일
+          </p>
+          <p style={{margin:0,fontSize:12,color:"#3b82f6"}}>
+            입사 후 {months}개월 기준 · 사용 연차는 촉진 발송 시 입력합니다
+          </p>
+        </div>
+      )}
+
+      <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:8}}>
         <button onClick={onClose} style={btnG}>취소</button>
         <button onClick={save} style={btnP}>저장</button>
       </div>
@@ -177,58 +201,87 @@ function EmpFormModal({initial,onSave,onClose}) {
   );
 }
 
+// ── 촉진 발송 모달 (사용연차 입력 + 잔여연차 자동 계산) ──
 function SendModal({emp,type,sett,onConfirm,onClose}) {
-  const [extra,setExtra] = useState("");
   const info = getInfo(emp.hireDate);
+  const annual = calcAnnualLeave(emp.hireDate);
+  const [usedLeave,setUsedLeave] = useState(String(emp.usedLeave??0));
+  const [extra,setExtra] = useState("");
+  const remain = Math.max(annual-(Number(usedLeave)||0),0);
+
   const openPreview = () => {
-    const w = window.open("","_blank");
-    w.document.write(makeDoc(emp,type,sett,extra));
+    const w=window.open("","_blank");
+    w.document.write(makeDoc(emp,type,sett,extra,usedLeave));
     w.document.close();
   };
+
   const sendEmail = () => {
     const subj = encodeURIComponent(`[연차 사용 촉진 ${type}] ${emp.name} 귀하 - 연차유급휴가 사용 촉진 통지`);
-    const lines = [
+    const body = [
       `${emp.name} 귀하,`,"",
       `안녕하세요. ${sett.company||"인사팀"}입니다.`,"",
       `근로기준법 제61조에 따라 연차유급휴가 사용 촉진(${type})을 안내드립니다.`,"",
-      `• 잔여 연차: ${emp.remainLeave}일`,
+      `• 발생 연차: ${annual}일 / 사용 연차: ${usedLeave||0}일 / 잔여 연차: ${remain}일`,
       `• 연차 만료일: ${kfmt(info?.exp)}`,"",
       type==="1차"
-        ? `본 메일 수신 후 10일 이내에 연차 사용 희망 시기를 인사담당자에게 서면으로 제출하여 주시기 바랍니다.\n기간 내 미제출 시 회사가 사용 시기를 지정할 수 있습니다.`
+        ? `본 메일 수신 후 10일 이내에 연차 사용 희망 시기를 인사담당자에게 서면으로 제출해 주시기 바랍니다.`
         : `1차 촉진 통지 후 사용 시기를 지정하지 않으셔서, 아래와 같이 사용 시기를 지정합니다:\n${extra||"(별도 지정 예정)"}`,
-      "","감사합니다.",`${sett.company||""}`,`인사담당자: ${sett.hrName||""}`
-    ];
-    window.location.href = `mailto:${emp.email}?subject=${subj}&body=${encodeURIComponent(lines.join("\n"))}`;
+      "","감사합니다.",sett.company||"",`인사담당자: ${sett.hrName||""}`
+    ].join("\n");
+    window.location.href=`mailto:${emp.email}?subject=${subj}&body=${encodeURIComponent(body)}`;
   };
+
   return (
     <Modal title={`${type} 촉진 문서 발송`} onClose={onClose} wide>
-      <p style={{margin:"-10px 0 16px",color:"#6b7280",fontSize:13}}>{emp.name} ({emp.email})</p>
+      <p style={{margin:"-10px 0 16px",color:"#6b7280",fontSize:13}}>{emp.name}{emp.department?` · ${emp.department}`:""} ({emp.email})</p>
+
+      {/* 연차 현황 */}
+      <div style={{background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:10,padding:16,marginBottom:16}}>
+        <p style={{margin:"0 0 12px",fontWeight:700,fontSize:13}}>📊 연차 현황 (시프티에서 사용 연차 확인 후 입력)</p>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:10}}>
+          <div style={{textAlign:"center",background:"#fff",borderRadius:8,padding:"12px 6px",border:"1px solid #e5e7eb"}}>
+            <p style={{margin:"0 0 4px",fontSize:11,color:"#9ca3af"}}>발생 연차</p>
+            <p style={{margin:"0 0 2px",fontSize:24,fontWeight:800,color:"#1e40af"}}>{annual}</p>
+            <p style={{margin:0,fontSize:10,color:"#93c5fd"}}>자동 계산</p>
+          </div>
+          <div style={{textAlign:"center",background:"#fff",borderRadius:8,padding:"12px 6px",border:"2px solid #fbbf24"}}>
+            <p style={{margin:"0 0 4px",fontSize:11,color:"#9ca3af"}}>사용 연차</p>
+            <input
+              type="number" min="0" max={annual} value={usedLeave}
+              onChange={e=>setUsedLeave(e.target.value)}
+              placeholder="0"
+              style={{width:"100%",border:"none",textAlign:"center",fontSize:22,fontWeight:800,color:"#d97706",background:"transparent",outline:"none"}}
+            />
+            <p style={{margin:0,fontSize:10,color:"#fbbf24"}}>✏️ 직접 입력</p>
+          </div>
+          <div style={{textAlign:"center",background:"#fff",borderRadius:8,padding:"12px 6px",border:"1px solid #e5e7eb"}}>
+            <p style={{margin:"0 0 4px",fontSize:11,color:"#9ca3af"}}>잔여 연차</p>
+            <p style={{margin:"0 0 2px",fontSize:24,fontWeight:800,color:"#dc2626"}}>{remain}</p>
+            <p style={{margin:0,fontSize:10,color:"#fca5a5"}}>자동 계산</p>
+          </div>
+        </div>
+        <p style={{margin:0,fontSize:11,color:"#9ca3af"}}>💡 사용 연차 입력 → 잔여 연차 자동 반영 → 문서에 포함됩니다.</p>
+      </div>
+
       {type==="2차" && (
-        <div style={{marginBottom:16}}>
-          <label style={lbl}>지정 연차 사용일 입력 (2차 문서에 포함됩니다)</label>
+        <div style={{marginBottom:14}}>
+          <label style={lbl}>지정 연차 사용일 (2차 문서에 포함)</label>
           <textarea value={extra} onChange={e=>setExtra(e.target.value)}
             placeholder={"예:\n• 2025년 11월 3일 ~ 11월 7일 (5일)\n• 2025년 11월 10일 (1일)"}
-            style={{...inp,height:90,resize:"vertical"}}/>
+            style={{...inp,height:80,resize:"vertical"}}/>
         </div>
       )}
-      <div style={{...card,background:"#f8fafc",marginBottom:16}}>
-        <p style={{margin:"0 0 10px",fontWeight:700,fontSize:13}}>📋 발송 정보 확인</p>
-        {[["수신",`${emp.name}${emp.department?` · ${emp.department}`:""}`],["이메일",emp.email],["잔여 연차",`${emp.remainLeave}일`],["만료일",kfmt(info?.exp)]].map(([k,v])=>(
-          <div key={k} style={{display:"flex",gap:8,marginBottom:3}}>
-            <span style={{fontSize:12,color:"#9ca3af",width:56,flexShrink:0}}>{k}</span>
-            <span style={{fontSize:13,color:"#374151"}}>{v}</span>
-          </div>
-        ))}
+
+      <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:16}}>
+        <button onClick={openPreview} style={{...btnG,border:"1px solid #e5e7eb",textAlign:"center"}}>📄 문서 미리보기 · PDF 저장</button>
+        <button onClick={sendEmail} style={{...btnP,textAlign:"center"}}>📧 이메일 발송 ({emp.email})</button>
       </div>
-      <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:18}}>
-        <button onClick={openPreview} style={{...btnG,border:"1px solid #e5e7eb",textAlign:"center"}}>📄 문서 미리보기 · PDF 저장 (새 탭에서 인쇄)</button>
-        <button onClick={sendEmail} style={{...btnP,textAlign:"center"}}>📧 이메일 발송하기 ({emp.email})</button>
-      </div>
-      <div style={{borderTop:"1px solid #e5e7eb",paddingTop:16}}>
-        <p style={{margin:"0 0 12px",fontSize:12,color:"#9ca3af"}}>이메일 발송 또는 문서 출력 후, 아래 버튼으로 발송 이력을 기록하세요.</p>
+
+      <div style={{borderTop:"1px solid #e5e7eb",paddingTop:14}}>
+        <p style={{margin:"0 0 10px",fontSize:12,color:"#9ca3af"}}>발송 완료 후 버튼을 눌러 이력을 기록하세요. 사용 연차도 함께 저장됩니다.</p>
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
           <button onClick={onClose} style={btnG}>닫기</button>
-          <button onClick={onConfirm} style={{...btnP,background:"#059669"}}>✅ 발송 완료 처리</button>
+          <button onClick={()=>onConfirm(Number(usedLeave)||0)} style={{...btnP,background:"#059669"}}>✅ 발송 완료 처리</button>
         </div>
       </div>
     </Modal>
@@ -237,29 +290,23 @@ function SendModal({emp,type,sett,onConfirm,onClose}) {
 
 // ── 비밀번호 화면 ──
 function LockScreen({onUnlock}) {
-  const [pw,setPw] = useState("");
-  const [err,setErr] = useState(false);
-  const stored = localStorage.getItem(PW_KEY);
-  const check = () => {
-    if (!stored) { localStorage.setItem(PW_KEY,pw); onUnlock(); return; }
-    if (pw === stored) { onUnlock(); }
-    else { setErr(true); setPw(""); }
+  const [pw,setPw]=useState(""); const [err,setErr]=useState(false);
+  const stored=localStorage.getItem(PW_KEY);
+  const check=()=>{
+    if(!stored){localStorage.setItem(PW_KEY,pw);onUnlock();return;}
+    if(pw===stored){onUnlock();}else{setErr(true);setPw("");}
   };
   return (
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#f1f5f9"}}>
       <div style={{...card,maxWidth:340,width:"100%",textAlign:"center",padding:40}}>
         <div style={{fontSize:48,marginBottom:16}}>📅</div>
         <h2 style={{margin:"0 0 6px",fontSize:20,fontWeight:800}}>연차촉진 관리시스템</h2>
-        <p style={{margin:"0 0 28px",fontSize:13,color:"#9ca3af"}}>
-          {stored ? "비밀번호를 입력하세요" : "처음 사용하시나요? 비밀번호를 설정해 주세요"}
-        </p>
+        <p style={{margin:"0 0 28px",fontSize:13,color:"#9ca3af"}}>{stored?"비밀번호를 입력하세요":"처음 사용하시나요? 비밀번호를 설정해 주세요"}</p>
         <input type="password" value={pw} onChange={e=>{setPw(e.target.value);setErr(false)}}
-          onKeyDown={e=>e.key==="Enter"&&check()}
-          placeholder="비밀번호" style={{...inp,textAlign:"center",marginBottom:10,letterSpacing:4}}/>
-        {err && <p style={{color:"#dc2626",fontSize:13,margin:"0 0 10px"}}>비밀번호가 올바르지 않습니다.</p>}
-        <button onClick={check} style={{...btnP,width:"100%",padding:"11px"}}>
-          {stored ? "로그인" : "비밀번호 설정 후 시작"}
-        </button>
+          onKeyDown={e=>e.key==="Enter"&&check()} placeholder="비밀번호"
+          style={{...inp,textAlign:"center",marginBottom:10,letterSpacing:4}}/>
+        {err&&<p style={{color:"#dc2626",fontSize:13,margin:"0 0 10px"}}>비밀번호가 올바르지 않습니다.</p>}
+        <button onClick={check} style={{...btnP,width:"100%",padding:"11px"}}>{stored?"로그인":"비밀번호 설정 후 시작"}</button>
       </div>
     </div>
   );
@@ -267,97 +314,87 @@ function LockScreen({onUnlock}) {
 
 // ── 메인 앱 ──
 function App() {
-  const [unlocked,setUnlocked] = useState(false);
-  const [emps,setEmps] = useState([]);
-  const [hist,setHist] = useState([]);
-  const [sett,setSett] = useState({company:"",hrName:"",hrPhone:""});
-  const [tab,setTab] = useState("dash");
-  const [empModal,setEmpModal] = useState(null);
-  const [sendModal,setSendModal] = useState(null);
-  const [filter,setFilter] = useState("urgent");
-  const [settSaved,setSettSaved] = useState(false);
+  const [unlocked,setUnlocked]=useState(false);
+  const [emps,setEmps]=useState([]);
+  const [hist,setHist]=useState([]);
+  const [sett,setSett]=useState({company:"",hrName:"",hrPhone:""});
+  const [tab,setTab]=useState("dash");
+  const [empModal,setEmpModal]=useState(null);
+  const [sendModal,setSendModal]=useState(null);
+  const [filter,setFilter]=useState("urgent");
+  const [settSaved,setSettSaved]=useState(false);
 
-  useEffect(() => {
-    if (!unlocked) return;
-    try { const e=localStorage.getItem(EMPS_KEY); if(e) setEmps(JSON.parse(e)); } catch(_){}
-    try { const h=localStorage.getItem(HIST_KEY); if(h) setHist(JSON.parse(h)); } catch(_){}
-    try { const s=localStorage.getItem(SETT_KEY); if(s) setSett(JSON.parse(s)); } catch(_){}
-  }, [unlocked]);
+  useEffect(()=>{
+    if(!unlocked)return;
+    try{const e=localStorage.getItem(EMPS_KEY);if(e)setEmps(JSON.parse(e));}catch(_){}
+    try{const h=localStorage.getItem(HIST_KEY);if(h)setHist(JSON.parse(h));}catch(_){}
+    try{const s=localStorage.getItem(SETT_KEY);if(s)setSett(JSON.parse(s));}catch(_){}
+  },[unlocked]);
 
-  const saveEmps = v => { setEmps(v); localStorage.setItem(EMPS_KEY,JSON.stringify(v)); };
-  const saveHist = v => { setHist(v); localStorage.setItem(HIST_KEY,JSON.stringify(v)); };
-  const saveSett = v => {
-    setSett(v); localStorage.setItem(SETT_KEY,JSON.stringify(v));
-    setSettSaved(true); setTimeout(()=>setSettSaved(false),2000);
-  };
+  const saveEmps=v=>{setEmps(v);localStorage.setItem(EMPS_KEY,JSON.stringify(v));};
+  const saveHist=v=>{setHist(v);localStorage.setItem(HIST_KEY,JSON.stringify(v));};
+  const saveSett=v=>{setSett(v);localStorage.setItem(SETT_KEY,JSON.stringify(v));setSettSaved(true);setTimeout(()=>setSettSaved(false),2000);};
 
-  const addEmp  = f => { saveEmps([...emps,{...f,id:uid(),remainLeave:Number(f.remainLeave)}]); setEmpModal(null); };
-  const editEmp = f => { saveEmps(emps.map(e=>e.id===empModal.emp.id?{...e,...f,remainLeave:Number(f.remainLeave)}:e)); setEmpModal(null); };
-  const deleteEmp = id => { if(!window.confirm("이 직원을 삭제하시겠습니까?")) return; saveEmps(emps.filter(e=>e.id!==id)); };
-  const confirmSend = () => {
-    const {emp,type} = sendModal;
-    const info = getInfo(emp.hireDate); if(!info) return;
-    saveHist([...hist,{id:uid(),empId:emp.id,empName:emp.name,type,period:info.period,date:new Date().toISOString()}]);
+  const addEmp=f=>{saveEmps([...emps,{...f,id:uid(),usedLeave:0}]);setEmpModal(null);};
+  const editEmp=f=>{saveEmps(emps.map(e=>e.id===empModal.emp.id?{...e,...f}:e));setEmpModal(null);};
+  const deleteEmp=id=>{if(!window.confirm("이 직원을 삭제하시겠습니까?"))return;saveEmps(emps.filter(e=>e.id!==id));};
+
+  const confirmSend=(usedLeave)=>{
+    const {emp,type}=sendModal;
+    const info=getInfo(emp.hireDate);if(!info)return;
+    saveEmps(emps.map(e=>e.id===emp.id?{...e,usedLeave}:e));
+    saveHist([...hist,{id:uid(),empId:emp.id,empName:emp.name,type,period:info.period,date:new Date().toISOString(),usedLeave}]);
     setSendModal(null);
   };
-  const changePw = () => {
-    const np = window.prompt("새 비밀번호를 입력하세요");
-    if (np && np.trim()) { localStorage.setItem(PW_KEY,np.trim()); alert("비밀번호가 변경되었습니다."); }
+
+  const changePw=()=>{
+    const np=window.prompt("새 비밀번호를 입력하세요");
+    if(np&&np.trim()){localStorage.setItem(PW_KEY,np.trim());alert("비밀번호가 변경되었습니다.");}
   };
 
-  if (!unlocked) return <LockScreen onUnlock={()=>setUnlocked(true)}/>;
+  if(!unlocked)return <LockScreen onUnlock={()=>setUnlocked(true)}/>;
 
-  const empWS = emps.map(e=>({...e,status:getStatus(e,hist)}));
-  const urgent = empWS.filter(e=>e.status.urgent);
-  const filtered = filter==="urgent" ? urgent : filter==="done" ? empWS.filter(e=>e.status.tag.includes("완료")) : empWS;
+  const empWS=emps.map(e=>{
+    const annual=calcAnnualLeave(e.hireDate);
+    const remain=Math.max(annual-(Number(e.usedLeave)||0),0);
+    return{...e,annual,remain,status:getStatus(e,hist)};
+  });
+  const urgent=empWS.filter(e=>e.status.urgent);
+  const filtered=filter==="urgent"?urgent:filter==="done"?empWS.filter(e=>e.status.tag.includes("완료")):empWS;
 
   return (
     <div style={{minHeight:"100vh",background:"#f1f5f9"}}>
-      {/* 헤더 */}
       <div style={{background:"#0f172a",padding:"0 24px"}}>
         <div style={{maxWidth:960,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"space-between",height:58}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
             <span style={{fontSize:22}}>📅</span>
             <span style={{color:"#fff",fontWeight:800,fontSize:17,letterSpacing:"-0.5px"}}>연차촉진 관리시스템</span>
-            {sett.company && <span style={{color:"#475569",fontSize:13,marginLeft:4}}>| {sett.company}</span>}
+            {sett.company&&<span style={{color:"#475569",fontSize:13,marginLeft:4}}>| {sett.company}</span>}
           </div>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            {urgent.length>0 && (
-              <span style={{background:"#dc2626",color:"#fff",borderRadius:20,padding:"4px 14px",fontSize:12,fontWeight:700,animation:"pulse 2s infinite"}}>
-                ⚠ 촉진 필요 {urgent.length}명
-              </span>
-            )}
+            {urgent.length>0&&<span style={{background:"#dc2626",color:"#fff",borderRadius:20,padding:"4px 14px",fontSize:12,fontWeight:700,animation:"pulse 2s infinite"}}>⚠ 촉진 필요 {urgent.length}명</span>}
             <button onClick={()=>setUnlocked(false)} style={{background:"none",border:"1px solid #334155",color:"#94a3b8",borderRadius:8,padding:"5px 12px",cursor:"pointer",fontSize:12}}>🔒 잠금</button>
           </div>
         </div>
       </div>
 
-      {/* 탭 */}
       <div style={{background:"#fff",borderBottom:"1px solid #e2e8f0"}}>
         <div style={{maxWidth:960,margin:"0 auto",display:"flex"}}>
           {[["dash","📊 대시보드"],["emps","👥 직원 관리"],["hist","📋 발송 이력"],["sett","⚙️ 설정"]].map(([k,v])=>(
-            <button key={k} onClick={()=>setTab(k)} style={{
-              background:"none",border:"none",padding:"15px 20px",cursor:"pointer",fontSize:14,
-              fontWeight:tab===k?700:400,color:tab===k?"#1e40af":"#6b7280",
-              borderBottom:tab===k?"2.5px solid #1e40af":"2.5px solid transparent",transition:"all .15s",whiteSpace:"nowrap"
-            }}>{v}</button>
+            <button key={k} onClick={()=>setTab(k)} style={{background:"none",border:"none",padding:"15px 20px",cursor:"pointer",fontSize:14,fontWeight:tab===k?700:400,color:tab===k?"#1e40af":"#6b7280",borderBottom:tab===k?"2.5px solid #1e40af":"2.5px solid transparent",transition:"all .15s",whiteSpace:"nowrap"}}>{v}</button>
           ))}
         </div>
       </div>
 
       <div style={{maxWidth:960,margin:"0 auto",padding:24}}>
 
-        {/* ══ 대시보드 ══ */}
-        {tab==="dash" && (
+        {tab==="dash"&&(
           <div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:14,marginBottom:22}}>
               {[
                 ["전체 직원",emps.length,"#1e40af","#eff6ff","👥"],
                 ["촉진 필요",urgent.length,"#dc2626","#fef2f2","🚨"],
-                ["이번달 만료",empWS.filter(e=>{
-                  const i=e.status.info; if(!i) return false;
-                  const m=new Date(); return i.exp.getMonth()===m.getMonth()&&i.exp.getFullYear()===m.getFullYear();
-                }).length,"#ea580c","#fff7ed","⏰"],
+                ["이번달 만료",empWS.filter(e=>{const i=e.status.info;if(!i)return false;const m=new Date();return i.exp.getMonth()===m.getMonth()&&i.exp.getFullYear()===m.getFullYear();}).length,"#ea580c","#fff7ed","⏰"],
                 ["처리 완료",empWS.filter(e=>e.status.tag.includes("완료")).length,"#059669","#f0fdf4","✅"],
               ].map(([k,v,c,bg,ico])=>(
                 <div key={k} style={{...card,borderLeft:`4px solid ${c}`,background:bg}}>
@@ -368,24 +405,25 @@ function App() {
             </div>
             <div style={card}>
               <h3 style={{margin:"0 0 16px",fontSize:15,fontWeight:700}}>🚨 촉진 필요 직원</h3>
-              {urgent.length===0 ? (
+              {urgent.length===0?(
                 <div style={{textAlign:"center",padding:"36px 0",color:"#9ca3af"}}>
                   <div style={{fontSize:36,marginBottom:10}}>✅</div>
                   <p style={{margin:0,fontSize:15}}>현재 촉진이 필요한 직원이 없습니다.</p>
                   <p style={{margin:"6px 0 0",fontSize:13}}>직원 관리 탭에서 직원을 추가해 보세요.</p>
                 </div>
-              ) : urgent.map(emp=>(
+              ):urgent.map(emp=>(
                 <div key={emp.id} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 0",borderBottom:"1px solid #f3f4f6",flexWrap:"wrap"}}>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
                       <span style={{fontWeight:700,fontSize:15}}>{emp.name}</span>
-                      {emp.department && <span style={{fontSize:12,color:"#9ca3af",background:"#f3f4f6",padding:"2px 8px",borderRadius:20}}>{emp.department}</span>}
+                      {emp.department&&<span style={{fontSize:12,color:"#9ca3af",background:"#f3f4f6",padding:"2px 8px",borderRadius:20}}>{emp.department}</span>}
                       <Badge {...emp.status}/>
                     </div>
                     <div style={{fontSize:12,color:"#9ca3af",display:"flex",gap:10,flexWrap:"wrap"}}>
-                      <span>🏖 잔여 {emp.remainLeave}일</span>
-                      <span>⏰ 만료 {kfmt(emp.status.info?.exp)}</span>
-                      {emp.status.info && <span style={{color:"#dc2626",fontWeight:600}}>D-{diffD(tod(),emp.status.info.exp)}</span>}
+                      <span>📊 발생 {emp.annual}일</span>
+                      <span>✅ 사용 {emp.usedLeave||0}일</span>
+                      <span>🏖 잔여 {emp.remain}일</span>
+                      {emp.status.info&&<span style={{color:"#dc2626",fontWeight:600}}>D-{diffD(tod(),emp.status.info.exp)}</span>}
                     </div>
                   </div>
                   <button onClick={()=>setSendModal({emp,type:emp.status.send})}
@@ -398,45 +436,42 @@ function App() {
           </div>
         )}
 
-        {/* ══ 직원 관리 ══ */}
-        {tab==="emps" && (
+        {tab==="emps"&&(
           <div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:10}}>
               <div style={{display:"flex",gap:6}}>
                 {[["urgent","촉진 필요"],["all","전체"],["done","완료"]].map(([v,l])=>(
-                  <button key={v} onClick={()=>setFilter(v)} style={{
-                    background:filter===v?"#1e40af":"#fff",color:filter===v?"#fff":"#374151",
-                    border:"1px solid "+(filter===v?"#1e40af":"#e5e7eb"),
-                    borderRadius:8,padding:"7px 14px",cursor:"pointer",fontWeight:600,fontSize:13
-                  }}>{l}</button>
+                  <button key={v} onClick={()=>setFilter(v)} style={{background:filter===v?"#1e40af":"#fff",color:filter===v?"#fff":"#374151",border:"1px solid "+(filter===v?"#1e40af":"#e5e7eb"),borderRadius:8,padding:"7px 14px",cursor:"pointer",fontWeight:600,fontSize:13}}>{l}</button>
                 ))}
               </div>
               <button onClick={()=>setEmpModal({mode:"add"})} style={btnP}>+ 직원 추가</button>
             </div>
-            {filtered.length===0 ? (
+            {filtered.length===0?(
               <div style={{...card,textAlign:"center",padding:48,color:"#9ca3af"}}>
                 <div style={{fontSize:36,marginBottom:10}}>👥</div>
                 <p style={{margin:0,fontSize:15}}>{filter==="urgent"?"촉진이 필요한 직원이 없습니다.":"직원이 없습니다."}</p>
                 <p style={{margin:"6px 0 0",fontSize:13}}>우측 상단 '직원 추가' 버튼으로 추가해 주세요.</p>
               </div>
-            ) : filtered.map(emp=>(
+            ):filtered.map(emp=>(
               <div key={emp.id} style={{...card,marginBottom:10}}>
                 <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
                   <div style={{flex:1,minWidth:200}}>
                     <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"}}>
                       <span style={{fontWeight:700,fontSize:15}}>{emp.name}</span>
-                      {emp.department && <span style={{fontSize:12,color:"#6b7280",background:"#f3f4f6",padding:"2px 8px",borderRadius:20}}>{emp.department}</span>}
+                      {emp.department&&<span style={{fontSize:12,color:"#6b7280",background:"#f3f4f6",padding:"2px 8px",borderRadius:20}}>{emp.department}</span>}
                       <Badge {...emp.status}/>
                     </div>
                     <div style={{fontSize:12,color:"#9ca3af",display:"flex",gap:12,flexWrap:"wrap"}}>
                       <span>📧 {emp.email}</span>
                       <span>📅 입사 {kfmt(emp.hireDate)}</span>
-                      <span>🏖 잔여 {emp.remainLeave}일</span>
-                      {emp.status.info && <span>⏰ 만료 {kfmt(emp.status.info.exp)}</span>}
+                      <span>📊 발생 {emp.annual}일</span>
+                      <span>✅ 사용 {emp.usedLeave||0}일</span>
+                      <span>🏖 잔여 {emp.remain}일</span>
+                      {emp.status.info&&<span>⏰ 만료 {kfmt(emp.status.info.exp)}</span>}
                     </div>
                   </div>
                   <div style={{display:"flex",gap:7,flexWrap:"wrap",flexShrink:0}}>
-                    {emp.status.send && (
+                    {emp.status.send&&(
                       <button onClick={()=>setSendModal({emp,type:emp.status.send})}
                         style={{background:"#dc2626",color:"#fff",border:"none",borderRadius:8,padding:"7px 14px",cursor:"pointer",fontWeight:700,fontSize:13}}>
                         {emp.status.send} 발송
@@ -451,54 +486,41 @@ function App() {
           </div>
         )}
 
-        {/* ══ 발송 이력 ══ */}
-        {tab==="hist" && (
+        {tab==="hist"&&(
           <div style={card}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
               <h3 style={{margin:0,fontSize:15,fontWeight:700}}>📋 촉진 문서 발송 이력</h3>
-              {hist.length>0 && <span style={{fontSize:12,color:"#9ca3af"}}>총 {hist.length}건</span>}
+              {hist.length>0&&<span style={{fontSize:12,color:"#9ca3af"}}>총 {hist.length}건</span>}
             </div>
-            {hist.length===0 ? (
+            {hist.length===0?(
               <div style={{textAlign:"center",padding:36,color:"#9ca3af"}}><p style={{margin:0}}>아직 발송 이력이 없습니다.</p></div>
-            ) : [...hist].reverse().map(h=>(
+            ):[...hist].reverse().map(h=>(
               <div key={h.id} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 0",borderBottom:"1px solid #f3f4f6"}}>
-                <span style={{
-                  background:h.type==="1차"?"#fff7ed":"#fef2f2",
-                  color:h.type==="1차"?"#ea580c":"#dc2626",
-                  border:`1px solid ${h.type==="1차"?"#fdba74":"#fca5a5"}`,
-                  borderRadius:8,padding:"3px 10px",fontWeight:700,fontSize:12,whiteSpace:"nowrap"
-                }}>{h.type}</span>
+                <span style={{background:h.type==="1차"?"#fff7ed":"#fef2f2",color:h.type==="1차"?"#ea580c":"#dc2626",border:`1px solid ${h.type==="1차"?"#fdba74":"#fca5a5"}`,borderRadius:8,padding:"3px 10px",fontWeight:700,fontSize:12,whiteSpace:"nowrap"}}>{h.type}</span>
                 <div style={{flex:1}}>
                   <p style={{margin:"0 0 2px",fontWeight:600,fontSize:14}}>{h.empName}</p>
-                  <p style={{margin:0,fontSize:12,color:"#9ca3af"}}>연차 기간: {h.period}</p>
+                  <p style={{margin:0,fontSize:12,color:"#9ca3af"}}>
+                    연차 기간: {h.period}{h.usedLeave!==undefined&&<span style={{marginLeft:8}}>· 사용 연차: {h.usedLeave}일</span>}
+                  </p>
                 </div>
-                <p style={{margin:0,fontSize:12,color:"#9ca3af",whiteSpace:"nowrap"}}>
-                  {new Date(h.date).toLocaleDateString("ko-KR",{year:"numeric",month:"long",day:"numeric"})}
-                </p>
+                <p style={{margin:0,fontSize:12,color:"#9ca3af",whiteSpace:"nowrap"}}>{new Date(h.date).toLocaleDateString("ko-KR",{year:"numeric",month:"long",day:"numeric"})}</p>
               </div>
             ))}
           </div>
         )}
 
-        {/* ══ 설정 ══ */}
-        {tab==="sett" && (
+        {tab==="sett"&&(
           <div style={{display:"flex",flexDirection:"column",gap:16,maxWidth:480}}>
             <div style={card}>
               <h3 style={{margin:"0 0 6px",fontSize:15,fontWeight:700}}>⚙️ 기본 설정</h3>
               <p style={{margin:"0 0 20px",fontSize:13,color:"#6b7280"}}>촉진 문서와 이메일에 자동으로 들어갈 정보를 설정하세요.</p>
-              {[
-                {label:"회사명",key:"company",ph:"(주)우리회사"},
-                {label:"인사담당자 이름",key:"hrName",ph:"김인사"},
-                {label:"인사팀 연락처",key:"hrPhone",ph:"02-1234-5678"},
-              ].map(({label,key,ph})=>(
+              {[{label:"회사명",key:"company",ph:"(주)우리회사"},{label:"인사담당자 이름",key:"hrName",ph:"김인사"},{label:"인사팀 연락처",key:"hrPhone",ph:"02-1234-5678"}].map(({label,key,ph})=>(
                 <div key={key} style={{marginBottom:16}}>
                   <label style={lbl}>{label}</label>
                   <input value={sett[key]||""} onChange={e=>setSett(p=>({...p,[key]:e.target.value}))} placeholder={ph} style={inp}/>
                 </div>
               ))}
-              <button onClick={()=>saveSett(sett)} style={{...btnP,marginTop:6}}>
-                {settSaved?"✅ 저장되었습니다":"설정 저장"}
-              </button>
+              <button onClick={()=>saveSett(sett)} style={{...btnP,marginTop:6}}>{settSaved?"✅ 저장되었습니다":"설정 저장"}</button>
             </div>
             <div style={card}>
               <h3 style={{margin:"0 0 6px",fontSize:15,fontWeight:700}}>🔒 보안</h3>
@@ -509,8 +531,8 @@ function App() {
         )}
       </div>
 
-      {empModal && <EmpFormModal initial={empModal.emp} onSave={empModal.mode==="add"?addEmp:editEmp} onClose={()=>setEmpModal(null)}/>}
-      {sendModal && <SendModal emp={sendModal.emp} type={sendModal.type} sett={sett} onConfirm={confirmSend} onClose={()=>setSendModal(null)}/>}
+      {empModal&&<EmpFormModal initial={empModal.emp} onSave={empModal.mode==="add"?addEmp:editEmp} onClose={()=>setEmpModal(null)}/>}
+      {sendModal&&<SendModal emp={sendModal.emp} type={sendModal.type} sett={sett} onConfirm={confirmSend} onClose={()=>setSendModal(null)}/>}
     </div>
   );
 }
